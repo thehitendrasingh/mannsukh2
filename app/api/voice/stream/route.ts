@@ -18,6 +18,7 @@
 
 import { NextRequest } from 'next/server';
 import { stripReasoning, hasReasoningTags } from '@/lib/utils/stripReasoning';
+import { MANNSUKH_SYSTEM_PROMPT, MANNSUKH_USER_PROMPT } from '@/lib/prompts';
 
 // Use Node.js runtime for reliable TextDecoder (Edge Runtime has 
 // inconsistent behavior with multi-byte UTF-8 sequences)
@@ -264,10 +265,6 @@ async function callLLMNonStreaming(
   apiKey: string,
   model: string,
   messages: { role: string; content: string }[],
-  lang: string,
-  systemPrompt: string,
-  transcript: string,
-  instruction: string,
   useGroq: boolean,
   requestStartTime: number
 ): Promise<{ content: string; firstTokenMs: number | null }> {
@@ -312,10 +309,6 @@ async function callLLMStreaming(
   apiKey: string,
   model: string,
   messages: { role: string; content: string }[],
-  lang: string,
-  systemPrompt: string,
-  transcript: string,
-  instruction: string,
   useGroq: boolean,
   requestStartTime: number
 ): Promise<{ content: string; firstTokenMs: number | null }> {
@@ -497,46 +490,9 @@ export async function POST(request: NextRequest) {
       const lang = (language as string) || 'hinglish';
       const instruction = languageInstructions[lang] || languageInstructions.hinglish;
 
-      const systemPrompt = `You are MannSukh - a calm, warm elder sibling who listens deeply.
-
-CRITICAL OUTPUT RULE:
-- Do NOT include any <think>, <reasoning>, <chain_of_thought>, or internal monologue tags.
-- Do NOT include any reasoning, thinking, or meta-commentary.
-- Reply DIRECTLY with only the final reflection text.
-- No markdown, no code blocks, no XML tags.
-- Start your response immediately with the reflection content.
-- Keep it SHORT: 10-20 words maximum, 25 words absolute max.
-
-Your role: Help users understand their thoughts and feelings through gentle reflection.
-
-You are NOT:
-- A therapist, coach, or counselor
-- An assistant or adviser
-- A motivational speaker
-- A friend who gives opinions
-- A task assistant who gives advice
-
-You DO:
-- Listen more than you speak (70/30 ratio)
-- Reflect back what you hear with emotional clarity
-- Identify patterns the user might not see
-- Offer grounded perspectives, not advice
-- Speak in the user's natural language (Hindi, Hinglish, or English)
-
-Style:
-- SHORT: 10-20 words max, 25 words absolute max
-- Natural, conversational, calm
-- Warm but not overly intimate
-- Never use therapy clichés: "practice self-love", "stay positive", "your inner child", "everything happens for a reason", "you are valid", "believe in yourself"
-- No markdown, no formatting, just plain speech
-- Prioritize: reflection, curiosity, follow-up questions
-- Avoid: explanations, long observations, advice, step-by-step instructions
-
-Language rule: ALWAYS reply in the user's language. Match their conversational style exactly.`;
-
       const messages = [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: `User said: "${transcript}"\n\nLanguage: ${lang}\n${instruction}\n\nReflect back gently - what might they be feeling underneath? Short reflection, 10-20 words max.` },
+        { role: 'system', content: MANNSUKH_SYSTEM_PROMPT },
+        { role: 'user', content: MANNSUKH_USER_PROMPT({ transcript, language: lang, instruction }) },
       ];
 
       const requestStartTime = Date.now();
@@ -550,14 +506,12 @@ Language rule: ALWAYS reply in the user's language. Match their conversational s
       if (disableStreaming) {
         // Non-streaming path (debug mode)
         llmResult = await callLLMNonStreaming(
-          apiUrl, apiKey, model, messages, lang, systemPrompt,
-          transcript, instruction, useGroq, requestStartTime
+          apiUrl, apiKey, model, messages, useGroq, requestStartTime
         );
       } else {
         // Streaming path (production default)
         llmResult = await callLLMStreaming(
-          apiUrl, apiKey, model, messages, lang, systemPrompt,
-          transcript, instruction, useGroq, requestStartTime
+          apiUrl, apiKey, model, messages, useGroq, requestStartTime
         );
       }
 
