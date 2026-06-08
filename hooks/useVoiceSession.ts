@@ -14,15 +14,14 @@ import { createReflectionEngine, ReflectionEngine } from '@/features/reflection/
 import { createCrisisDetector, CrisisDetector } from '@/features/safety/crisisDetection';
 import { detectLanguageWithHint, SupportedLanguage } from '@/lib/language/detectLanguage';
 import { createStreamingSTTClient, createStreamingTTSClient, StreamingSTTClient, StreamingTTSClient, DEFAULT_STT_CONFIG, DEFAULT_TTS_CONFIG } from '@/lib/shunya/streaming';
-import { validateTranscript } from '@/features/reflection/transcriptValidator';
-import { createTurnManager } from '@/features/session/TurnManager';
-import { createConversationLock } from '@/features/session/conversationLock';
-import { createConversationMemory, addUserTurn, addAITurn, getRecentUserTurns, getRecentAITurns } from '@/features/session/conversationMemory';
 import { evaluateConfidence } from '@/features/reflection/confidenceGate';
 import { detectGreeting } from '@/features/reflection/greetingDetector';
 import { detectAdviceSeeking } from '@/features/reflection/adviceGuard';
 import { evaluateTurnTaking } from '@/features/reflection/turnTakingGuard';
 import { evaluateEarlyCommit } from '@/features/reflection/earlyCommit';
+import { createTurnManager } from '@/features/session/TurnManager';
+import { createConversationLock } from '@/features/session/conversationLock';
+import { createConversationMemory, addUserTurn, addAITurn, getRecentUserTurns, getRecentAITurns } from '@/features/session/conversationMemory';
 import { createLatencyMarkers, reportLatency } from '@/lib/debug/latencyProfiler';
 
 const MIN_AUDIO_SIZE = 500;
@@ -329,15 +328,12 @@ export function useVoiceSession(options: UseVoiceSessionOptions = {}): UseVoiceS
         lastTranscriptRef.current = transcript;
         turnTakingRef.current?.onUserSpeechPartial(transcript);
 
-        const validation = validateTranscript(transcript, language);
-
-        if (!validation.valid) {
-          console.log(`[Session] Transcript too short (${validation.reason}), sending fallback`);
-          turnTakingRef.current?.onUserSpeechEnd(1000);
-          const fallbackText = validation.reason === 'too_short' ? 'Thoda aur batao.' : 'Main sun raha hoon.';
-          await speakWithTTS(fallbackText, language);
-          return;
-        }
+        // Removed the hard short-transcript bypass in `useVoiceSession.ts`.
+        // Previously, transcripts shorter than `transcriptValidator.minContextChars` or with
+        // fewer than 2 words were forced into a fixed TTS fallback here, so the LLM never saw them.
+        // That caused the observed split behavior: short utterances got fallback strings, longer
+        // ones got real reflections. Now all transcripts continue to the turn guard and reflection
+        // engine uniformly.
 
         // TASK 2+3: Turn guard with 1s default + early commit
         const { memory, currentLanguage, recentUserTurns, recentAITurns, silenceThresholdMs } = await preparePromise;
