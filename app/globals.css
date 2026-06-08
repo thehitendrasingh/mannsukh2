@@ -1,0 +1,103 @@
+@import "tailwindcss";
+
+:root {
+  --background: #FAF6F0;
+  --foreground: #2C2A29;
+  --card: #FFFFFF;
+  --card-foreground: #2C2A29;
+  --muted: #F3ECE2;
+  --muted-foreground: #706B64;
+  --accent: #E5EBE4;
+  --accent-foreground: #3A523C;
+  --border: #E8DFD3;
+  --ring: #4F6F52;
+  --radius: 1rem;
+}
+
+@theme {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-border: var(--border);
+  --color-ring: var(--ring);
+  
+  --animate-breath: breath 6s ease-in-out infinite;
+  --animate-breath-expand: breath-expand 6s ease-in-out infinite;
+  --animate-breath-subtle: breath-subtle 6s ease-in-out infinite;
+}
+
+@keyframes breath {
+  0%, 100% {
+    transform: scale(1);
+    box-shadow: 0 0 25px 5px rgba(229, 235, 228, 0.4);
+  }
+  50% {
+    transform: scale(1.18);
+    box-shadow: 0 0 50px 20px rgba(79, 111, 82, 0.25);
+  }
+}
+
+@keyframes breath-expand {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 0.15;
+    filter: blur(12px);
+  }
+  50% {
+    transform: scale(1.45);
+    opacity: 0.35;
+    filter: blur(24px);
+  }
+}
+
+@keyframes breath-subtle {
+  0%, 100% {
+    transform: scale(0.95);
+    opacity: 0.6;
+  }
+  50% {
+    transform: scale(1.08);
+    opacity: 0.95;
+  }
+}
+
+body {
+  background-color: var(--background);
+  color: var(--foreground);
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  overflow-x: hidden;
+}
+
+/* Glassmorphism utility */
+.glass-panel {
+  background: rgba(255, 255, 255, 0.55);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.45);
+}
+
+/* Page transitions fade effect */
+.fade-transition {
+  transition: opacity 0.5s ease, transform 0.5s ease;
+}
+
+/* Clean, organic scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #E8DFD3;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #D8CFC3;
+}
