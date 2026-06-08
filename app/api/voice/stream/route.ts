@@ -438,7 +438,7 @@ export async function POST(request: NextRequest) {
     };
     
     try {
-      const { transcript, language, turnId } = await request.json();
+      const { transcript, language, turnId, stage, stageStyle, maxWords } = await request.json();
       
       if (!transcript) {
         return Response.json({ error: 'Transcript required' }, { status: 400 });
@@ -492,7 +492,14 @@ export async function POST(request: NextRequest) {
 
       const messages = [
         { role: 'system', content: MANNSUKH_SYSTEM_PROMPT },
-        { role: 'user', content: MANNSUKH_USER_PROMPT({ transcript, language: lang, instruction }) },
+        { role: 'user', content: MANNSUKH_USER_PROMPT({ 
+          transcript, 
+          language: lang, 
+          instruction,
+          stage: stage || undefined,
+          stageStyle: stageStyle || undefined,
+          maxWords: maxWords ? Number(maxWords) : undefined,
+        }) },
       ];
 
       const requestStartTime = Date.now();

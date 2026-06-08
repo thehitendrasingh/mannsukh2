@@ -1,7 +1,8 @@
 /**
- * Reflection Engine
- * Generates natural, conversational AI reflections based on user context
- * Routes LLM calls through server-side API to keep API key secure
+ * Reflection Engine V2
+ * Generates natural, conversational AI reflections based on user context.
+ * V2: Routes through IntentRouter first — only calls Qwen for DEEP_CONVERSATION.
+ * Simple intents return direct pre-written responses (no LLM call).
  */
 
 import { Reflection, ReflectionContext } from '@/types/voice';
@@ -9,6 +10,20 @@ import { ReflectionTrigger, createReflectionTrigger } from './reflectionTrigger'
 import { CrisisDetector, createCrisisDetector } from '@/features/safety/crisisDetection';
 import { detectLanguage } from '@/lib/language/detectLanguage';
 import { stripReasoning, hasReasoningTags } from '@/lib/utils/stripReasoning';
+import { 
+  routeIntent, 
+  IntentType, 
+  RouterOutput,
+  IntentResult 
+} from '@/features/conversation/intentRouter';
+import {
+  ConversationStage,
+  ConversationState,
+  createConversationState,
+  advanceTurn,
+  getStageConfig,
+} from '@/features/conversation/conversationStage';
+import { getDirectResponse, ResponseLanguage } from '@/features/conversation/responses';
 
 export interface ReflectionEngineConfig {
   maxReflectionWords: number;
@@ -25,6 +40,7 @@ export class ReflectionEngine {
   private crisisDetector: CrisisDetector;
   private config: ReflectionEngineConfig;
   private lastUserLanguage: 'hindi' | 'hinglish' | 'english' = 'hinglish';
+  private conversationState: ConversationState = createConversationState();
 
   constructor(config?: Partial<ReflectionEngineConfig>) {
     this.config = { ...DEFAULT_REFLECTION_ENGINE_CONFIG, ...config };
@@ -32,195 +48,215 @@ export class ReflectionEngine {
     this.crisisDetector = createCrisisDetector();
   }
 
-// Main entry point: check if reflection needed and generate if so
-   // isDirectSpeech: when true, always triggers reflection (for direct speech response)
-   async processContext(context: ReflectionContext, isDirectSpeech: boolean = false): Promise<{
-     reflection?: Reflection;
-     crisis?: { detected: boolean; message: string; resources: any[] };
-   }> {
-     // Update language detection
-     this.lastUserLanguage = detectLanguage(context.recentTranscript) || this.lastUserLanguage;
-     context.userLanguage = this.lastUserLanguage;
+  // Main entry point: route transcript through Intent Router
+  async processContext(context: ReflectionContext, isDirectSpeech: boolean = false): Promise<{
+    reflection?: Reflection;
+    crisis?: { detected: boolean; message: string; resources: any[] };
+  }> {
+    // Update language detection
+    this.lastUserLanguage = detectLanguage(context.recentTranscript) || this.lastUserLanguage;
+    context.userLanguage = this.lastUserLanguage;
 
-     // 1. Crisis check (highest priority)
-     const crisisSignal = this.crisisDetector.detect(context.recentTranscript);
-     if (crisisSignal.detected && crisisSignal.severity === 'high') {
-       const crisisMessage = CrisisDetector.getCrisisMessage(this.lastUserLanguage);
-       const resources = CrisisDetector.getCrisisResources();
-       return {
-         crisis: {
-           detected: true,
-           message: crisisMessage,
-           resources,
-         },
-       };
-     }
+    // 1. Crisis check (highest priority)
+    const crisisSignal = this.crisisDetector.detect(context.recentTranscript);
+    if (crisisSignal.detected && crisisSignal.severity === 'high') {
+      const crisisMessage = CrisisDetector.getCrisisMessage(this.lastUserLanguage);
+      const resources = CrisisDetector.getCrisisResources();
+      return {
+        crisis: {
+          detected: true,
+          message: crisisMessage,
+          resources,
+        },
+      };
+    }
 
-     // 2. Check if reflection should trigger
-     const triggerResult = this.trigger.checkTrigger(context, isDirectSpeech);
-     
-     if (!triggerResult.shouldTrigger) {
-       return {};
-     }
+    // 2. Route through Intent Router
+    const routeResult: RouterOutput = routeIntent({
+      transcript: context.recentTranscript,
+    });
+    
+    const stageConfig = getStageConfig(this.conversationState);
+    
+    console.log(`[ReflectionEngine] Intent: ${routeResult.intent.type} | Stage: ${this.conversationState.currentStage} | Qwen: ${routeResult.intent.qwenRequired ? 'YES' : 'SKIPPED'}`);
 
-    // 3. Generate reflection via Qwen
-    const reflection = await this.generateReflection(context, triggerResult);
+    // 3. If Qwen is NOT required, return direct response
+    if (!routeResult.intent.qwenRequired) {
+      // Build the response key as string (matching IntentType enum values)
+      const directResponse = getDirectResponse(
+        routeResult.intent.type as string,
+        this.mapLanguage(this.lastUserLanguage)
+      );
+      
+      if (directResponse) {
+        // Advance turn for stage tracking
+        this.conversationState = advanceTurn(this.conversationState);
+        
+        return {
+          reflection: {
+            id: `refl-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+            text: directResponse,
+            language: this.lastUserLanguage,
+            triggerReason: 'speech_ended',
+            timestamp: Date.now(),
+            firstTokenMs: 0,
+          },
+        };
+      }
+    }
+
+    // 4. Check if reflection should trigger (for Qwen path only)
+    const triggerResult = this.trigger.checkTrigger(context, isDirectSpeech);
+    
+    if (!triggerResult.shouldTrigger && !routeResult.intent.qwenRequired) {
+      return {};
+    }
+
+    // 5. Generate reflection via Qwen (only for DEEP_CONVERSATION)
+    const reflection = await this.generateReflection(context, triggerResult, stageConfig);
     
     if (reflection) {
+      this.conversationState = advanceTurn(this.conversationState);
       return { reflection };
     }
 
     return {};
   }
 
-// Generate reflection via server-side API (keeps API key secure)
-    private async generateReflection(
-      context: ReflectionContext,
-      triggerResult: { reason: string; confidence: number; detectedSignals: string[] }
-    ): Promise<Reflection | null> {
-      try {
-        console.log('[ReflectionEngine] Calling /api/voice/stream for transcript:', context.recentTranscript.substring(0, 50));
-        
-        const body: Record<string, unknown> = {
-          transcript: context.recentTranscript,
-          language: context.userLanguage,
-        };
-        
-        // Pass turnId for per-turn latency tracking
-        if (context.turnId) {
-          body.turnId = context.turnId;
-        }
-        
-        const response = await fetch('/api/voice/stream', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(body),
-        });
+  private mapLanguage(lang: 'hindi' | 'hinglish' | 'english'): ResponseLanguage {
+    return lang;
+  }
 
-        if (!response.ok) {
-          const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
-          console.error('[ReflectionEngine] API error:', response.status, errorData);
-          return this.getFallbackReflection(context, triggerResult);
-        }
+  // Generate reflection via server-side API
+  private async generateReflection(
+    context: ReflectionContext,
+    triggerResult: { reason: string; confidence: number; detectedSignals: string[] },
+    stageConfig: {
+      behaviors: {
+        allowReflection: boolean;
+        allowAnalysis: boolean;
+        maxWords: number;
+        style: string;
+      };
+    }
+  ): Promise<Reflection | null> {
+    try {
+      console.log('[ReflectionEngine] Calling /api/voice/stream for transcript:', context.recentTranscript.substring(0, 50));
+      
+      const body: Record<string, unknown> = {
+        transcript: context.recentTranscript,
+        language: context.userLanguage,
+        stage: this.conversationState.currentStage,
+        stageStyle: stageConfig.behaviors.style,
+        maxWords: stageConfig.behaviors.maxWords,
+      };
+      
+      // Pass turnId for per-turn latency tracking
+      if (context.turnId) {
+        body.turnId = context.turnId;
+      }
+      
+      const response = await fetch('/api/voice/stream', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      });
 
-        const data = await response.json();
-        const content = data.reflection?.trim() || '';
-        const firstTokenMs = typeof data.firstTokenMs === 'number' ? data.firstTokenMs : undefined;
-
-        if (!content) {
-          return this.getFallbackReflection(context, triggerResult);
-        }
-
-        // Clean and validate response
-        const cleanedReflection = this.cleanReflection(content);
-
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+        console.error('[ReflectionEngine] API error:', response.status, errorData);
+        // Fall back to stage-appropriate direct response
         return {
           id: `refl-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-          text: cleanedReflection,
+          text: stageConfig.behaviors.style === 'curious' 
+            ? "Main yahan hoon. Sun raha hoon."
+            : "Kuch samajh nahi aaya. Phir se kaho?",
           language: this.lastUserLanguage,
           triggerReason: triggerResult.reason as 'silence' | 'thought_complete' | 'emotional_signal' | 'speech_ended',
           timestamp: Date.now(),
-          firstTokenMs,
+          firstTokenMs: undefined,
         };
-      } catch (error) {
-        console.error('[ReflectionEngine] Generation error:', error);
+      }
+
+      const data = await response.json();
+      const content = data.reflection?.trim() || '';
+      const firstTokenMs = typeof data.firstTokenMs === 'number' ? data.firstTokenMs : undefined;
+
+      if (!content) {
         return this.getFallbackReflection(context, triggerResult);
       }
-}
 
-    private cleanReflection(text: string): string {
-      // Remove any markdown, quotes, or formatting
-      let cleaned = text
-        .replace(/^["'`]+|["'`]+$/g, '') // Remove surrounding quotes
-        .replace(/```[\s\S]*?```/g, '') // Remove code blocks
-        .replace(/\*\*([^*]+)\*\*/g, '$1') // Remove bold
-        .replace(/\*([^*]+)\*/g, '$1') // Remove italic
-        .trim();
+      // Clean and validate response
+      const cleanedReflection = this.cleanReflection(content);
 
-      // Ensure it's not too long (roughly 60 words)
-      const words = cleaned.split(/\s+/);
-      if (words.length > 70) {
-        cleaned = words.slice(0, 70).join(' ') + '...';
-      }
-
-      return cleaned;
+      return {
+        id: `refl-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+        text: cleanedReflection,
+        language: this.lastUserLanguage,
+        triggerReason: triggerResult.reason as 'silence' | 'thought_complete' | 'emotional_signal' | 'speech_ended',
+        timestamp: Date.now(),
+        firstTokenMs,
+      };
+    } catch (error) {
+      console.error('[ReflectionEngine] Generation error:', error);
+      return this.getFallbackReflection(context, triggerResult);
     }
+  }
+
+  private cleanReflection(text: string): string {
+    let cleaned = text
+      .replace(/^["'`]+|["'`]+$/g, '')
+      .replace(/```[\s\S]*?```/g, '')
+      .replace(/\*\*([^*]+)\*\*/g, '$1')
+      .replace(/\*([^*]+)\*/g, '$1')
+      .trim();
+
+    const words = cleaned.split(/\s+/);
+    if (words.length > 70) {
+      cleaned = words.slice(0, 70).join(' ') + '...';
+    }
+
+    return cleaned;
+  }
 
   private getFallbackReflection(
     context: ReflectionContext,
     triggerResult: { reason: string; detectedSignals: string[] }
   ): Reflection {
-    // Pre-written fallbacks by language and trigger
     const fallbacks: Record<string, Record<string, string[]>> = {
       silence: {
         hinglish: [
-          "Lag raha hai kuch baatein abhi bhi andar hain, jo bahar nahi aayi.",
-          "Kuch soch rahe ho jo kehna mushkil lag raha hai.",
-          "Silence bhi kuch kehti hai. Kya chal raha hai andar?",
+          "Lag raha hai kuch baatein abhi bhi andar hain.",
+          "Kuch soch rahe ho?",
+          "Chuppi bhi kuch kehti hai.",
         ],
         english: [
-          "Seems like there's more you want to say but haven't found the words yet.",
-          "Sometimes the quiet holds the most. What's on your mind?",
-          "There's something underneath that silence. Want to share?",
+          "Seems like there's more you want to say.",
+          "What's on your mind?",
+          "Sometimes the quiet holds the most.",
         ],
         hindi: [
-          "Lagta hai kuch baatein abhi bhi andar hain, jo bahar nahi aayin.",
-          "Kuch soch rahe ho jo kehna mushkil lag raha hai.",
-          "Chuppi bhi kuch kehti hai. Kya chal raha hai andar?",
+          "लगता है कुछ बातें अब भी अंदर हैं।",
+          "कुछ सोच रहे हो?",
+          "चुप्पी भी कुछ कहती है।",
         ],
       },
       speech_ended: {
-        hinglish: [
-          "Samjha? Maine kuch socha tumhare baare mein.",
-          "Tumhari baat sunke kuch palla - batao kya tumhe yehi lagta hai?",
-          "Interesting... Kya tum isme khud ko reflect kar pa rahe ho?",
-        ],
-        english: [
-          "I heard you. What stands out to me is...",
-          "Something in what you said made me think...",
-          "I'm curious - what does this bring up for you?",
-        ],
-        hindi: [
-          "Sun liya. Tumhare shabdon ne kuch kaha.",
-          "Kuch samajh aaya jo andar chhupa hai.",
-          "Tumhe kya lagta hai is baare mein?",
-        ],
+        hinglish: ["Main yahan hoon. Sun raha hoon."],
+        english: ["I'm here. I'm listening."],
+        hindi: ["मैं यहाँ हूँ। सुन रहा हूँ।"],
       },
       thought_complete: {
-        hinglish: [
-          "Samajh aata hai - yeh baat tumhare liye important hai.",
-          "Yeh thought complete hua, lekin lagta hai iske peeche kuch aur bhi hai.",
-          "Sawal sahi poocha hai khud se. Jawab dhundhna mushkil hai.",
-        ],
-        english: [
-          "That feels like an important realization. What does it mean for you?",
-          "You've named something real. How does that sit with you?",
-          "Good question to ask yourself. The answer might take time.",
-        ],
-        hindi: [
-          "Samajh aata hai - yeh baat tumhare liye important hai.",
-          "Yeh thought complete hua, lekin lagta hai iske peeche kuch aur bhi hai.",
-          "Sawal sahi poocha hai khud se. Jawab dhundhna mushkil hai.",
-        ],
+        hinglish: ["Samajh aata hai."],
+        english: ["I understand."],
+        hindi: ["समझ आता है।"],
       },
       emotional_signal: {
-        hinglish: [
-          "Ye feelings heavy lag rahi hain. Tum is mein akela nahi ho.",
-          "Dard samajh aata hai. Koi bhi isse guzre to aisa hi mehsoos karega.",
-          "Ye sab feel karna normal hai. Khud ko blame mat karo.",
-        ],
-        english: [
-          "These feelings are heavy. You're not alone in carrying them.",
-          "That pain makes sense. Anyone would feel this way in your situation.",
-          "It's okay to feel this way. Don't blame yourself for it.",
-        ],
-        hindi: [
-          "Ye feelings heavy lag rahi hain. Tum is mein akela nahi ho.",
-          "Dard samajh aata hai. Koi bhi isse guzre to aisa hi mehsoos karega.",
-          "Ye sab feel karna normal hai. Khud ko blame mat karo.",
-        ],
+        hinglish: ["Main yahan hoon. Batao."],
+        english: ["I'm here. Tell me."],
+        hindi: ["मैं यहाँ हूँ। बताओ।"],
       },
     };
 
@@ -244,6 +280,7 @@ export class ReflectionEngine {
   reset(): void {
     this.trigger.reset();
     this.lastUserLanguage = 'hinglish';
+    this.conversationState = createConversationState();
   }
 
   // Update config
