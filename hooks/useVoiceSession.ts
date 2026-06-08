@@ -206,6 +206,7 @@ export function useVoiceSession(options: UseVoiceSessionOptions = {}): UseVoiceS
         silenceDurationMs: silenceMs,
         recentUserTurns: getRecentUserTurns(memory).slice(-3),
         recentAIReflections: getRecentAITurns(memory).slice(-3),
+        turnId: lastTurnIdRef.current || undefined,
       };
 
       const result = await reflectionEngine.processContext(reflectionContext, silenceMs >= 2500);
@@ -373,6 +374,7 @@ export function useVoiceSession(options: UseVoiceSessionOptions = {}): UseVoiceS
           silenceDurationMs: silenceMs,
           recentUserTurns: recentUserTurns.slice(-3),
           recentAIReflections: recentAITurns.slice(-3),
+          turnId: lastTurnIdRef.current || undefined,
         };
 
         // TASK 6: Parallelize LLM call

@@ -80,15 +80,23 @@ export class ReflectionEngine {
     ): Promise<Reflection | null> {
       try {
         console.log('[ReflectionEngine] Calling /api/voice/stream for transcript:', context.recentTranscript.substring(0, 50));
+        
+        const body: Record<string, unknown> = {
+          transcript: context.recentTranscript,
+          language: context.userLanguage,
+        };
+        
+        // Pass turnId for per-turn latency tracking
+        if (context.turnId) {
+          body.turnId = context.turnId;
+        }
+        
         const response = await fetch('/api/voice/stream', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify({
-            transcript: context.recentTranscript,
-            language: context.userLanguage,
-          }),
+          body: JSON.stringify(body),
         });
 
         if (!response.ok) {

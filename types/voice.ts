@@ -141,6 +141,7 @@ export interface ReflectionContext {
   silenceDurationMs: number;
   recentUserTurns?: string[];
   recentAIReflections?: string[];
+  turnId?: string;
 }
 
 export interface Reflection {
